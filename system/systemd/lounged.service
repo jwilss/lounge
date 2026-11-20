@@ -1,0 +1,15 @@
+[Unit]
+Description=Lounge box service (home screen, apps, remote)
+After=graphical-session-pre.target
+
+[Service]
+Environment=LOUNGE_ROOT=/usr/share/lounge
+Environment=LOUNGE_EXTENSION=/usr/share/lounge/extension-built
+ExecStart=/usr/bin/python3 /usr/share/lounge/backend/lounged.py
+Restart=on-failure
+RestartSec=2
+# apps run in their own scopes; restarting this service never closes them
+KillMode=process
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pointer button: turns the air mouse pointer on or off (off = arrows and buttons only).
+curl -fsS -m 3 -X POST -H 'Content-Type: application/json' -d '{"key":"pointer"}' \
+  http://127.0.0.1:8737/api/input -o /dev/null 2>/dev/null \
+  || swaymsg 'input type:pointer events toggle enabled disabled' >/dev/null

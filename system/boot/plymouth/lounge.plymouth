@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Lounge
+Description=Lounge logo on black
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/lounge
+ScriptFile=/usr/share/plymouth/themes/lounge/lounge.script

@@ -1,0 +1,28 @@
+#!/bin/sh
+# Started by greetd at boot: logs the lounge user straight into Sway.
+export XDG_CURRENT_DESKTOP=sway
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=sway
+export MOZ_ENABLE_WAYLAND=1
+
+case "$(systemd-detect-virt 2>/dev/null)" in
+  oracle|vmware|kvm|qemu|microsoft|parallels)
+    # Testing in a virtual machine: its pretend graphics card is unreliable with Sway,
+    # so draw everything in software. (lounge-launcher and lounged also turn the GPU off.)
+    export WLR_RENDERER=pixman
+    export WLR_NO_HARDWARE_CURSORS=1
+    export LOUNGE_VM=1
+    ;;
+  *)
+    export LIBVA_DRIVER_NAME=iHD
+    ;;
+esac
+
+# If Sway can't start with the graphics driver, try once more in software mode
+# so there's always a picture rather than a blank screen.
+started=$(date +%s)
+sway --config /etc/lounge/sway/config
+if [ $(( $(date +%s) - started )) -lt 10 ] && [ "${WLR_RENDERER:-}" != "pixman" ]; then
+  export WLR_RENDERER=pixman
+  exec sway --config /etc/lounge/sway/config
+fi

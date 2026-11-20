@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" width="520" height="128">
+  <!-- One-colour version of logo.svg (the bouncing logo screensaver colours it): the sofa is cut
+       out of the box. If you replace logo.svg with your own, replace this one to match. -->
+  <defs>
+    <mask id="sofa-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="170" height="128">
+      <rect x="0" y="0" width="170" height="128" fill="#fff"/>
+      <path d="M44 62 v14 a10 10 0 0 0 10 10 h54 a10 10 0 0 0 10-10 v-14" fill="none" stroke="#000" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M56 62 v-6 a8 8 0 0 1 8-8 h34 a8 8 0 0 1 8 8 v6" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <rect x="6" y="14" width="150" height="100" rx="30" fill="#fff" mask="url(#sofa-cut)"/>
+  <text x="182" y="95" font-family="Inter, InterVariable, 'Helvetica Neue', Arial, sans-serif" font-size="78" font-weight="650" letter-spacing="-2" fill="#fff">lounge</text>
+</svg>

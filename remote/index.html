@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <title>Lounge admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0c0c10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="/remote/remote.css">
+</head>
+<body>
+  <header>
+    <h1>Lounge <span class="h1-sub">admin</span></h1>
+    <span id="conn" class="conn">Connecting…</span>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="vpn">VPN</button>
+    <button class="tab" data-tab="add">Add app</button>
+    <button class="tab" data-tab="type">Type</button>
+    <button class="tab" data-tab="remote">Remote</button>
+  </nav>
+
+  <section id="tab-remote" class="panel">
+    <div id="pad" class="pad" aria-label="Swipe to move, tap to select">
+      <span class="pad-hint">Swipe to move · Tap to select</span>
+    </div>
+    <div class="buttons">
+      <button data-key="back" class="btn">Back</button>
+      <button data-key="home" class="btn">Home</button>
+      <button data-key="playpause" class="btn">Play / Pause</button>
+    </div>
+    <div class="buttons">
+      <button data-key="voldown" class="btn">Vol −</button>
+      <button data-key="magnify" class="btn btn-zoom" title="Magnifier: a zoom window that follows the pointer">Zoom</button>
+      <button data-key="volup" class="btn">Vol +</button>
+    </div>
+    <div class="buttons">
+      <button data-key="apps" class="btn">Open apps</button>
+      <button data-key="size" class="btn btn-size" title="Make the menus bigger or smaller">Aa</button>
+    </div>
+  </section>
+
+  <section id="tab-type" class="panel">
+    <p class="note">Type here and it appears in whatever box is selected on the TV.</p>
+    <textarea id="text" rows="3" placeholder="Search, web address, password…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+    <div class="buttons">
+      <button id="send" class="btn btn-primary">Send</button>
+      <button data-key="backspace" class="btn">Delete</button>
+      <button data-key="ok" class="btn">Enter</button>
+    </div>
+  </section>
+
+  <section id="tab-add" class="panel">
+    <p class="note">Paste a web address and it becomes an app on the TV's home screen.</p>
+    <label>Web address<input id="add-url" type="url" inputmode="url" placeholder="https://www.twitch.tv" autocapitalize="off" autocomplete="off"></label>
+    <label>Name (optional)<input id="add-name" type="text" placeholder="Uses the site name if blank"></label>
+    <label class="check"><input id="add-vpn" type="checkbox" checked> Use VPN</label>
+    <label class="check"><input id="add-tv" type="checkbox"> Ask for the TV version of the site</label>
+    <button id="add-go" class="btn btn-primary wide">Add to TV</button>
+  </section>
+
+  <section id="tab-vpn" class="panel active">
+    <p class="note"><b>Add VPN servers:</b> download WireGuard configuration files from your VPN provider (two or three give you a backup), then pick them here; you can choose several at once.</p>
+    <label class="file-btn btn btn-primary wide">Choose WireGuard files<input id="vpn-files" type="file" accept=".conf,text/plain" multiple hidden></label>
+    <div id="vpn-status" class="vpn-status"></div>
+    <ul id="vpn-list" class="vpn-list"></ul>
+  </section>
+
+  <div id="toast" class="toast"></div>
+  <script src="/remote/remote.js"></script>
+</body>
+</html>

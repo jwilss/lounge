@@ -1,0 +1,4 @@
+# Lets the Lounge service turn the VPN on and off, install signed Lounge updates, and sleep, restart
+# or turn off the box (Control Centre and the sleep timer; there's no polkit on the box, so systemd
+# only takes these from root), and nothing else.
+lounge ALL=(root) NOPASSWD: /usr/local/libexec/lounge/lounge-vpn, /usr/local/libexec/lounge/lounge-update, /usr/bin/systemctl suspend, /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff

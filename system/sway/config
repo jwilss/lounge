@@ -1,0 +1,71 @@
+# Lounge: Sway set up as a TV shell.
+# No bars, no borders, every app full screen on its own workspace.
+# The launcher lives on the workspace called "home".
+
+# ---------------------------------------------------------------- display
+# 4K TVs run at scale 2 (lounged sets 1 on a 1080p screen).
+output * scale 2
+# The boot logo stays up as the background until the home screen fades in over it.
+output * bg /usr/share/lounge/brand/splash.png fill #000000
+output * adaptive_sync off
+
+# ---------------------------------------------------------------- look
+default_border none
+default_floating_border none
+hide_edge_borders --i3 both
+focus_follows_mouse no
+mouse_warping none
+focus_on_window_activation focus
+for_window [all] fullscreen enable
+# no inhibit_idle here: lounge-idle switches the picture off when nobody's watching (OLED),
+# and apps keep it on themselves while video plays
+
+# ---------------------------------------------------------------- pointer (air mouse)
+# Lounge's own big, high-contrast pointer; lounged sets the size from each person's settings
+seat * xcursor_theme Lounge 64
+seat * hide_cursor 3000
+seat * hide_cursor when-typing enable
+input type:pointer {
+    accel_profile adaptive
+    pointer_accel 0.15
+}
+input type:keyboard xkb_layout gb
+
+# ---------------------------------------------------------------- buttons
+# Home: back to the home screen, or Control Centre if you're already there.
+# Press it twice quickly for the app switcher.
+bindsym --no-repeat XF86HomePage exec /usr/local/bin/lounge-home
+bindsym --no-repeat Mod4+h exec /usr/local/bin/lounge-home
+
+# Magnifier: a TV-shaped zoom window that follows the pointer. Press again to close.
+# F12 is a placeholder until we know which spare button the air mouse sends.
+# Find it with:  wev   (press the button, read the "sym" name, put it here)
+set $zoom_key F12
+bindsym --no-repeat $zoom_key exec /usr/local/bin/lounge-magnifier --toggle
+bindsym --no-repeat Mod4+z exec /usr/local/bin/lounge-magnifier --toggle
+
+# Air mouse pointer on/off. Off: everything works with the arrows and OK, and the pointer
+# can't drift about. F11 is a placeholder for the remote's mouse button (find it with wev).
+set $pointer_key F11
+bindsym --no-repeat $pointer_key exec /usr/local/bin/lounge-pointer
+bindsym --no-repeat Mod4+p exec /usr/local/bin/lounge-pointer
+
+# Display size for Lounge's menus: Shift + the zoom button cycles Standard, Large, Extra large
+bindsym --no-repeat Shift+$zoom_key exec /usr/local/bin/lounge-size
+
+# Volume keys work everywhere, even inside apps
+# through lounged, so an open Control Centre shows the change (falls back to wpctl by itself)
+bindsym XF86AudioRaiseVolume exec /usr/local/bin/lounge-volume up
+bindsym XF86AudioLowerVolume exec /usr/local/bin/lounge-volume down
+bindsym XF86AudioMute exec /usr/local/bin/lounge-volume mute
+
+# Emergency exit while setting up (Ctrl+Alt+Backspace): drops back to the login prompt
+bindsym Ctrl+Alt+BackSpace exit
+
+# ---------------------------------------------------------------- start up
+exec_always systemctl --user import-environment SWAYSOCK WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+exec_always dbus-update-activation-environment --systemd SWAYSOCK WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+exec systemctl --user restart lounged.service
+exec /usr/local/bin/lounge-launcher
+# picture off when idle and nothing is playing (exec_always: a reload after an update restarts it)
+exec_always systemd-cat -t lounge-idle /usr/local/bin/lounge-idle

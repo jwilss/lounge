@@ -1,0 +1,356 @@
+#!/usr/bin/python3
+"""Lounge magnifier: a TV-shaped (16:9) live zoom window that floats above the pointer.
+
+Run with --toggle (what the remote's magnifier button does): starts it, or closes it if it's
+already open. While it's open the pointer moves the lens, a click goes through to whatever
+is under the pointer, the scroll wheel changes the zoom, and keys go to the app as normal.
+
+How it works: a transparent full-screen layer-shell overlay tracks the pointer, and grim
+copies the small area around the pointer (wlr-screencopy) several times a second. The lens
+sits above that area (below it near the top of the screen), so it never copies itself.
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+
+PIDFILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "lounge-magnifier.pid")
+FPS = 20
+MARGIN = 14          # gap between the copied area and the lens, logical px
+ZOOMS = [1.5, 2, 2.5, 3, 4, 5]
+LENS_WIDTH = {"medium": 0.45, "large": 0.6}   # share of the screen width
+
+
+POINTER_IN_COPY = False   # set in main()
+
+
+def pointer_in_copy():
+    """True when Sway draws the pointer into the picture (software cursor: in a VM, or
+    WLR_NO_HARDWARE_CURSORS). Then the copied area already shows the real pointer, zoomed,
+    and painting our own arrow too would give two pointers in the lens."""
+    if os.environ.get("WLR_NO_HARDWARE_CURSORS") == "1" or os.environ.get("LOUNGE_VM") == "1":
+        return True
+    try:
+        return subprocess.run(["systemd-detect-virt", "--vm", "--quiet"], timeout=3).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def running_pid():
+    try:
+        pid = int(open(PIDFILE).read().strip())
+        os.kill(pid, 0)
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            if b"lounge-magnifier" not in f.read():
+                return None
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def settings():
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8737/api/settings", timeout=1) as r:
+            return json.load(r)
+    except (OSError, ValueError):
+        return {}
+
+
+def notify(event):
+    """Tells lounged (for the home screen and phone) whether the magnifier is open."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8737/api/magnifier", method="POST",
+                                     data=json.dumps({"event": event}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=1).close()
+    except OSError:
+        pass
+
+
+def read_ppm(data):
+    """grim -t ppm output -> (width, height, rgb bytes)."""
+    parts = []
+    i = 0
+    while len(parts) < 4:
+        while data[i:i + 1].isspace():
+            i += 1
+        if data[i:i + 1] == b"#":
+            i = data.index(b"\n", i) + 1
+            continue
+        j = i
+        while not data[j:j + 1].isspace():
+            j += 1
+        parts.append(data[i:j])
+        i = j
+    i += 1
+    if parts[0] != b"P6":
+        raise ValueError("not a P6 ppm")
+    w, h = int(parts[1]), int(parts[2])
+    return w, h, data[i:i + w * h * 3]
+
+
+def main():
+    global POINTER_IN_COPY
+    POINTER_IN_COPY = pointer_in_copy()
+    if "--toggle" in sys.argv:
+        pid = running_pid()
+        if pid:
+            os.kill(pid, signal.SIGTERM)
+            return
+    elif running_pid():
+        return
+
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("GtkLayerShell", "0.1")
+    from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, GtkLayerShell
+    import cairo
+
+    s = settings()
+    try:
+        zoom = float(s.get("magnifierZoom") or 3)
+    except (TypeError, ValueError):
+        zoom = 3.0
+    lens_share = LENS_WIDTH.get(s.get("magnifierSize"), LENS_WIDTH["medium"])
+
+    class Lens(Gtk.Window):
+        def __init__(self):
+            super().__init__()
+            self.zoom = zoom
+            self.cursor = None          # pointer position, logical px
+            self.frame = None           # (pixbuf, capture rect)
+            self.lens = None            # where the lens was last drawn
+            self.passing_click = False
+            self.alive = True
+
+            GtkLayerShell.init_for_window(self)
+            GtkLayerShell.set_namespace(self, "lounge-magnifier")
+            GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+            for edge in (GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM,
+                         GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT):
+                GtkLayerShell.set_anchor(self, edge, True)
+            GtkLayerShell.set_exclusive_zone(self, -1)
+            GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+
+            visual = self.get_screen().get_rgba_visual()
+            if visual:
+                self.set_visual(visual)
+            self.set_app_paintable(True)
+            self.add_events(Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.BUTTON_PRESS_MASK |
+                            Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.SCROLL_MASK |
+                            Gdk.EventMask.SMOOTH_SCROLL_MASK | Gdk.EventMask.ENTER_NOTIFY_MASK)
+            self.connect("draw", self.on_draw)
+            self.connect("motion-notify-event", self.on_motion)
+            self.connect("enter-notify-event", self.on_motion)
+            self.connect("button-release-event", self.on_release)
+            self.connect("button-press-event", lambda *_: True)
+            self.connect("scroll-event", self.on_scroll)
+            self.connect("destroy", self.on_destroy)
+            threading.Thread(target=self.capture_loop, daemon=True).start()
+
+        # ---- geometry
+        def screen_size(self):
+            return self.get_allocated_width(), self.get_allocated_height()
+
+        def layout(self):
+            """Capture rect (around the pointer) and lens rect (above it), logical px."""
+            sw, sh = self.screen_size()
+            if not self.cursor or sw < 10:
+                return None, None
+            x, y = self.cursor
+            best = None
+            # Try the full-size lens above, below, right and left of the pointer; if none fits
+            # without covering the area being copied, shrink it a step at a time.
+            for step in range(9):
+                lw = round(sw * lens_share * (1 - step * 0.06))
+                lh = round(lw * 9 / 16)
+                cw, ch = max(8, round(lw / self.zoom)), max(8, round(lh / self.zoom))
+                cx = int(min(max(x - cw / 2, 0), sw - cw))
+                cy = int(min(max(y - ch / 2, 0), sh - ch))
+                mid_x = int(min(max(x - lw / 2, MARGIN), sw - lw - MARGIN))
+                mid_y = int(min(max(y - lh / 2, MARGIN), sh - lh - MARGIN))
+                for lx, ly in ((mid_x, cy - MARGIN - lh), (mid_x, cy + ch + MARGIN),
+                               (cx + cw + MARGIN, mid_y), (cx - MARGIN - lw, mid_y)):
+                    if MARGIN <= lx <= sw - lw - MARGIN and MARGIN <= ly <= sh - lh - MARGIN:
+                        return (cx, cy, cw, ch), (lx, ly, lw, lh)
+                if best is None:
+                    best = ((cx, cy, cw, ch), (mid_x, MARGIN if y > sh / 2 else sh - lh - MARGIN, lw, lh))
+            return best
+
+        # ---- capture (background thread)
+        def capture_loop(self):
+            while self.alive:
+                start = time.monotonic()
+                cap, _ = self.layout()
+                if cap and not self.passing_click:
+                    x, y, w, h = cap
+                    try:
+                        out = subprocess.run(["grim", "-t", "ppm", "-g", f"{x},{y} {w}x{h}", "-"],
+                                             capture_output=True, timeout=2).stdout
+                        pw, ph, rgb = read_ppm(out)
+                        pix = GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(rgb), GdkPixbuf.Colorspace.RGB,
+                                                              False, 8, pw, ph, pw * 3)
+                        GLib.idle_add(self.new_frame, pix, cap)
+                    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+                        pass
+                time.sleep(max(0.0, 1 / FPS - (time.monotonic() - start)))
+
+        def new_frame(self, pix, cap):
+            self.frame = (pix, cap)
+            self.queue_draw()
+            return False
+
+        # ---- drawing
+        def on_draw(self, _w, cr):
+            cr.set_operator(cairo.OPERATOR_SOURCE)
+            cr.set_source_rgba(0, 0, 0, 0)
+            cr.paint()
+            cr.set_operator(cairo.OPERATOR_OVER)
+            cap, lens = self.layout()
+            if not lens or not self.frame:
+                return True
+            pix, fcap = self.frame
+            lx, ly, lw, lh = lens
+            self.lens = lens
+            r = lh * 0.06
+
+            def rounded(x, y, w, h, rad):
+                cr.new_sub_path()
+                cr.arc(x + w - rad, y + rad, rad, -1.5708, 0)
+                cr.arc(x + w - rad, y + h - rad, rad, 0, 1.5708)
+                cr.arc(x + rad, y + h - rad, rad, 1.5708, 3.1416)
+                cr.arc(x + rad, y + rad, rad, 3.1416, 4.7124)
+                cr.close_path()
+
+            # shadow and border
+            for i, a in ((10, 0.10), (6, 0.16), (3, 0.24)):
+                rounded(lx - i, ly - i + 4, lw + 2 * i, lh + 2 * i, r + i)
+                cr.set_source_rgba(0, 0, 0, a)
+                cr.fill()
+            rounded(lx - 4, ly - 4, lw + 8, lh + 8, r + 4)
+            cr.set_source_rgba(1, 1, 1, 0.92)
+            cr.fill()
+
+            # the zoomed picture
+            cr.save()
+            rounded(lx, ly, lw, lh, r)
+            cr.clip()
+            cr.set_source_rgb(0, 0, 0)
+            cr.paint()
+            cr.translate(lx, ly)
+            cr.scale(lw / pix.get_width(), lh / pix.get_height())
+            Gdk.cairo_set_source_pixbuf(cr, pix, 0, 0)
+            cr.get_source().set_filter(cairo.FILTER_GOOD)
+            cr.paint()
+            cr.restore()
+
+            # where the pointer is, inside the lens
+            if self.cursor and not POINTER_IN_COPY:
+                fx, fy, fw, fh = fcap
+                px = lx + (self.cursor[0] - fx) / fw * lw
+                py = ly + (self.cursor[1] - fy) / fh * lh
+                if lx < px < lx + lw and ly < py < ly + lh:
+                    size = lh * 0.07
+                    cr.move_to(px, py)
+                    cr.line_to(px, py + size)
+                    cr.line_to(px + size * 0.28, py + size * 0.74)
+                    cr.line_to(px + size * 0.7, py + size * 0.7)
+                    cr.close_path()
+                    cr.set_source_rgba(1, 1, 1, 1)
+                    cr.fill_preserve()
+                    cr.set_source_rgba(0, 0, 0, 1)
+                    cr.set_line_width(max(1.5, size * 0.07))
+                    cr.stroke()
+
+            # zoom level tag
+            cr.select_font_face("Inter", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            cr.set_font_size(lh * 0.06)
+            label = f"{self.zoom:g}×"
+            ext = cr.text_extents(label)
+            tx, ty = lx + lw - ext.width - lh * 0.07, ly + lh - lh * 0.06
+            rounded(tx - lh * 0.03, ty - ext.height - lh * 0.03, ext.width + lh * 0.06, ext.height + lh * 0.06, lh * 0.03)
+            cr.set_source_rgba(0, 0, 0, 0.6)
+            cr.fill()
+            cr.move_to(tx - ext.x_bearing, ty)
+            cr.set_source_rgba(1, 1, 1, 1)
+            cr.show_text(label)
+            return True
+
+        # ---- input
+        def on_motion(self, _w, ev):
+            self.cursor = (ev.x, ev.y)
+            self.queue_draw()
+            return True
+
+        def on_scroll(self, _w, ev):
+            up = ev.direction == Gdk.ScrollDirection.UP
+            down = ev.direction == Gdk.ScrollDirection.DOWN
+            if ev.direction == Gdk.ScrollDirection.SMOOTH:
+                ok, _dx, dy = ev.get_scroll_deltas()
+                up, down = ok and dy < 0, ok and dy > 0
+            i = min(range(len(ZOOMS)), key=lambda k: abs(ZOOMS[k] - self.zoom))
+            if up:
+                self.zoom = ZOOMS[min(i + 1, len(ZOOMS) - 1)]
+            elif down:
+                self.zoom = ZOOMS[max(i - 1, 0)]
+            self.queue_draw()
+            return True
+
+        def on_release(self, _w, ev):
+            """Pass the click through: stop taking pointer input for a moment, click, take it back."""
+            if self.passing_click or ev.button not in (1, 2, 3):
+                return True
+            self.passing_click = True
+            self.input_shape_combine_region(cairo.Region())
+            self.queue_draw()  # commit the empty input region now
+            button = {1: "button1", 2: "button2", 3: "button3"}[ev.button]
+
+            def click():
+                subprocess.run(["swaymsg", f"seat - cursor move 0 0; seat - cursor press {button}; "
+                                           f"seat - cursor release {button}"],
+                               capture_output=True, timeout=3)
+                GLib.timeout_add(350, take_back)
+                return False
+
+            def take_back():
+                self.input_shape_combine_region(None)
+                self.passing_click = False
+                self.queue_draw()
+                subprocess.run(["swaymsg", "seat - cursor move 0 0"], capture_output=True, timeout=3)
+                return False
+
+            GLib.timeout_add(60, click)
+            return True
+
+        def on_destroy(self, *_):
+            self.alive = False
+            Gtk.main_quit()
+
+    with open(PIDFILE, "w") as f:
+        f.write(str(os.getpid()))
+    win = Lens()
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, lambda: (win.destroy(), False)[1])
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, lambda: (win.destroy(), False)[1])
+    win.show_all()
+    # nudge the pointer so the lens appears straight away, before the remote moves
+    GLib.timeout_add(200, lambda: subprocess.run(["swaymsg", "seat - cursor move 0 0"],
+                                                 capture_output=True, timeout=3) and False)
+    notify("open")
+    try:
+        Gtk.main()
+    finally:
+        notify("closed")
+        try:
+            if running_pid() in (None, os.getpid()):
+                os.unlink(PIDFILE)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Lounge",
+  "version": "0.2.0",
+  "description": "Lounge on-screen keyboard and Continue watching for web apps.",
+  "background": { "service_worker": "background.js" },
+  "host_permissions": ["http://127.0.0.1:8737/*"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["keyboard-core.js", "osk.js", "recorder.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

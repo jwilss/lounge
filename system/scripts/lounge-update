@@ -1,0 +1,131 @@
+#!/bin/bash
+# Lounge updater (runs as root, called by lounged through sudo).
+#
+#   lounge-update check     what's the newest release? (prints JSON)
+#   lounge-update apply     download, check the signature, install (runs in the background)
+#   lounge-update status    progress of the last apply (prints JSON)
+#
+# Releases come from GitHub. Each one is a tarball plus a signature made with the
+# Lounge release key; anything not signed by a key in /etc/lounge/update-signers is refused.
+set -euo pipefail
+
+# (sudo clears the environment, so these overrides only work when testing as root by hand)
+REPO="${LOUNGE_UPDATE_REPO:-jwilss/lounge}"
+API="${LOUNGE_UPDATE_API:-https://api.github.com}"
+SIGNERS="${LOUNGE_UPDATE_SIGNERS:-/etc/lounge/update-signers}"
+SHARE="${LOUNGE_SHARE:-/usr/share/lounge}"
+WORK="${LOUNGE_UPDATE_WORK:-/var/lib/lounge/update}"
+STATE="${LOUNGE_UPDATE_STATE:-/run/lounge/update.json}"
+NAMESPACE=lounge-update
+
+mkdir -p "$WORK" "$(dirname "$STATE")"
+installed() { cat "$SHARE/VERSION" 2>/dev/null || echo "0.0.0"; }
+
+state() {  # state <stage> <message> [version]
+  printf '{"stage": "%s", "message": "%s", "version": "%s", "at": %s}\n' \
+    "$1" "$2" "${3:-}" "$(date +%s)" > "$STATE.tmp"
+  chmod 644 "$STATE.tmp"
+  mv "$STATE.tmp" "$STATE"
+}
+
+latest_json() {
+  curl -fsSL -m 20 -H "Accept: application/vnd.github+json" \
+    "$API/repos/$REPO/releases/latest"
+}
+
+# newest release: tag, notes, and the two download links we need
+latest() {
+  latest_json | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+assets = {a["name"]: a["browser_download_url"] for a in r.get("assets", [])}
+tag = r.get("tag_name", "").lstrip("v")
+out = {"version": tag, "notes": (r.get("body") or "")[:4000],
+       "tarball": assets.get(f"lounge-{tag}.tar.gz", ""), "signature": assets.get(f"lounge-{tag}.tar.gz.sig", "")}
+print(json.dumps(out))'
+}
+
+newer() {  # is $1 newer than $2?
+  python3 -c 'import sys
+v = lambda s: tuple(int(x) for x in s.split(".") if x.isdigit())
+sys.exit(0 if v(sys.argv[1]) > v(sys.argv[2]) else 1)' "$1" "$2"
+}
+
+apply_now() {
+  local info version tarball sig dir
+  state checking "Looking for the update"
+  info="$(latest)" || { state failed "Couldn't reach GitHub"; exit 1; }
+  version="$(printf '%s' "$info" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')"
+  tarball="$(printf '%s' "$info" | python3 -c 'import json,sys;print(json.load(sys.stdin)["tarball"])')"
+  sig="$(printf '%s' "$info" | python3 -c 'import json,sys;print(json.load(sys.stdin)["signature"])')"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { state failed "The release has no proper version number"; exit 1; }
+  [ -n "$tarball" ] && [ -n "$sig" ] || { state failed "The release is missing its files" "$version"; exit 1; }
+  newer "$version" "$(installed)" || { state "done" "Already up to date" "$version"; exit 0; }
+  [ -s "$SIGNERS" ] || { state failed "No release key on this box, so updates can't be checked" "$version"; exit 1; }
+
+  state downloading "Downloading $version" "$version"
+  rm -rf "${WORK:?}"/*
+  if ! curl -fsSL -m 300 -o "$WORK/lounge.tar.gz" "$tarball" || ! curl -fsSL -m 60 -o "$WORK/lounge.tar.gz.sig" "$sig"; then
+    state failed "The download didn't finish; try again later" "$version"
+    exit 1
+  fi
+
+  state verifying "Checking it really came from you" "$version"
+  if ! ssh-keygen -Y verify -f "$SIGNERS" -I lounge-release -n "$NAMESPACE" \
+       -s "$WORK/lounge.tar.gz.sig" < "$WORK/lounge.tar.gz" >/dev/null 2>&1; then
+    state failed "The signature didn't match, so the update was refused" "$version"
+    exit 1
+  fi
+
+  state installing "Installing $version" "$version"
+  dir="$WORK/src"
+  mkdir -p "$dir"
+  tar -xzf "$WORK/lounge.tar.gz" -C "$dir" --no-same-owner || { state failed "The update couldn't be unpacked" "$version"; exit 1; }
+  [ -x "$dir/Lounge/install/install.sh" ] || { state failed "The update is incomplete" "$version"; exit 1; }
+  local user
+  user="$(stat -c %U "$SHARE" 2>/dev/null || echo root)"
+  [ "$user" = root ] && user="$(awk -F'"' '/^user =/ {print $2; exit}' /etc/greetd/config.toml 2>/dev/null || echo lounge)"
+  if ! (cd "$dir/Lounge" && ./install/install.sh --update --user "$user" > "$WORK/install.log" 2>&1); then
+    state failed "Installing failed (details in $WORK/install.log)" "$version"
+    exit 1
+  fi
+
+  state restarting "Restarting Lounge" "$version"
+  # the home screen reloads itself when it sees the new version
+  systemctl --user -M "$user@" restart lounged.service >/dev/null 2>&1 || true
+  local uid sock
+  uid="$(id -u "$user")"
+  sock="$(ls /run/user/"$uid"/sway-ipc.*.sock 2>/dev/null | head -1 || true)"
+  [ -n "$sock" ] && runuser -u "$user" -- env SWAYSOCK="$sock" swaymsg reload >/dev/null 2>&1 || true
+  state "done" "Updated to $version" "$version"
+}
+
+case "${1:-}" in
+  check)
+    info="$(latest)" || { echo '{"error": "Couldn'"'"'t reach GitHub"}'; exit 0; }
+    printf '%s' "$info" | python3 -c '
+import json, sys
+info = json.load(sys.stdin); cur = sys.argv[1]
+v = lambda s: tuple(int(x) for x in s.split(".") if x.isdigit())
+info["installed"] = cur
+info["available"] = bool(info["version"]) and v(info["version"]) > v(cur)
+print(json.dumps(info))' "$(installed)"
+    ;;
+  apply)
+    # run detached so restarting lounged doesn't stop the update half way
+    systemd-run --quiet --unit="lounge-update-$(date +%s)" --collect "$0" apply-now
+    echo '{"started": true}'
+    ;;
+  apply-now)
+    exec 9>"$WORK/.lock"
+    flock -n 9 || { echo "already updating" >&2; exit 1; }
+    apply_now || true
+    ;;
+  status)
+    cat "$STATE" 2>/dev/null || echo '{"stage": "idle"}'
+    ;;
+  *)
+    echo "usage: lounge-update check | apply | status" >&2
+    exit 2
+    ;;
+esac

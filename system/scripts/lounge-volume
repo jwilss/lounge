@@ -1,0 +1,12 @@
+#!/bin/sh
+# Volume keys (remote, phone remote, keyboard): lounge-volume up | down | mute
+# Goes through lounged so an open Control Centre shows the change; straight to PipeWire if
+# lounged isn't answering, so the volume keys always work.
+case "${1:-}" in
+  up)   body='{"step": 5}';          fallback="wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+" ;;
+  down) body='{"step": -5}';         fallback="wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" ;;
+  mute) body='{"toggleMute": true}'; fallback="wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" ;;
+  *) echo "usage: lounge-volume up|down|mute" >&2; exit 2 ;;
+esac
+curl -fsS -m 2 -X POST -H 'Content-Type: application/json' -d "$body" \
+  http://127.0.0.1:8737/api/volume -o /dev/null 2>/dev/null || $fallback

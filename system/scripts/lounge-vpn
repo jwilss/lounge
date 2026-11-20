@@ -1,0 +1,179 @@
+#!/bin/bash
+# Lounge VPN helper (runs as root through sudo, called by lounged).
+#
+#   lounge-vpn list            names of the WireGuard configs in /etc/lounge/vpn
+#   lounge-vpn status          JSON: {"connected": true/false, "server": "..."}
+#   lounge-vpn up NAME UID     connect, and set up the per-app split for user UID
+#   lounge-vpn down            disconnect
+#   lounge-vpn import NAME     save a WireGuard config read from stdin (checked first)
+#   lounge-vpn remove NAME     delete a saved config
+#   lounge-vpn killswitch on UID | off
+#                              block VPN apps from the internet whenever the VPN is down
+#
+# Per-app split: apps with "Use VPN" turned off run in lounge-novpn.slice.
+# nftables marks their traffic with WireGuard's own fwmark (51820), so it skips
+# the tunnel and goes out through your normal connection instead.
+
+set -euo pipefail
+
+CONF_DIR=/etc/lounge/vpn
+RUN_DIR=/run/lounge
+IFACE=lgvpn
+MARK=0xca6c   # 51820, the fwmark wg-quick gives the tunnel
+
+mkdir -p "$RUN_DIR"
+chmod 700 "$RUN_DIR"
+
+connected() { ip link show "$IFACE" >/dev/null 2>&1; }
+
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,40}$ ]]; }
+
+# Only plain WireGuard settings are allowed. In particular PreUp/PostUp/PreDown/PostDown
+# are refused, because wg-quick would run them as root.
+check_config() {
+  local file="$1" line key section="" has_iface=0 has_peer=0 has_key=0 has_endpoint=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -z "$line" ] && continue
+    case "$line" in
+      "[Interface]") section=iface; has_iface=1; continue ;;
+      "[Peer]") section=peer; has_peer=1; continue ;;
+      \[*) echo "unexpected section: $line" >&2; return 1 ;;
+    esac
+    key="$(printf '%s' "${line%%=*}" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+    case "$section:$key" in
+      iface:privatekey) has_key=1 ;;
+      iface:address|iface:dns|iface:mtu|iface:listenport) ;;
+      peer:endpoint) has_endpoint=1 ;;
+      peer:publickey|peer:presharedkey|peer:allowedips|peer:persistentkeepalive) ;;
+      *) echo "setting not allowed: ${line%%=*}" >&2; return 1 ;;
+    esac
+  done < "$file"
+  if [ $has_iface = 1 ] && [ $has_peer = 1 ] && [ $has_key = 1 ] && [ $has_endpoint = 1 ]; then
+    return 0
+  fi
+  echo "that doesn't look like a WireGuard config" >&2
+  return 1
+}
+
+killswitch_rules() {
+  local uid="$1"
+  local path="user.slice/user-${uid}.slice/user@${uid}.service/lounge.slice/lounge-apps.slice"
+  local sk="socket cgroupv2 level 5 \"$path\""
+  nft delete table inet lounge_ks 2>/dev/null || true
+  nft -f - <<EOF
+table inet lounge_ks {
+  chain out {
+    type filter hook output priority filter; policy accept;
+    $sk oifname { "lo", "$IFACE" } accept
+    $sk ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
+    $sk ip6 daddr { fc00::/7, fe80::/10 } accept
+    $sk reject
+  }
+}
+EOF
+}
+
+json_status() {
+  if connected; then
+    printf '{"connected": true, "server": "%s"}\n' "$(cat "$RUN_DIR/server" 2>/dev/null || echo unknown)"
+  else
+    printf '{"connected": false, "server": null}\n'
+  fi
+}
+
+split_rules() {
+  local uid="$1" conf="$2"
+  local path="user.slice/user-${uid}.slice/user@${uid}.service/lounge.slice/lounge-novpn.slice"
+  # DNS servers inside the tunnel (often 10.2.0.1) stay on the tunnel even for split apps
+  local dns_all dns dns6
+  dns_all=$(awk -F'=' 'tolower($1) ~ /^[[:space:]]*dns[[:space:]]*$/ {print $2}' "$conf" | tr ',' '\n' | tr -d ' \r')
+  dns=$(printf '%s\n' "$dns_all" | grep -E '^[0-9.]+$' | paste -sd, - || true)
+  dns6=$(printf '%s\n' "$dns_all" | grep -E '^[0-9a-fA-F:]+$' | grep ':' | paste -sd, - || true)
+  local dns_rule="" dns6_rule=""
+  [ -n "$dns" ] && dns_rule="ip daddr { $dns } return"
+  [ -n "$dns6" ] && dns6_rule="ip6 daddr { $dns6 } return"
+  nft delete table inet lounge 2>/dev/null || true
+  nft -f - <<EOF
+table inet lounge {
+  chain out {
+    type route hook output priority mangle; policy accept;
+    $dns_rule
+    $dns6_rule
+    socket cgroupv2 level 5 "$path" meta mark set $MARK
+  }
+  chain post {
+    type nat hook postrouting priority srcnat; policy accept;
+    meta mark $MARK oifname != "$IFACE" masquerade
+  }
+}
+EOF
+}
+
+case "${1:-}" in
+  list)
+    shopt -s nullglob
+    for f in "$CONF_DIR"/*.conf; do basename "$f" .conf; done
+    ;;
+  status)
+    json_status
+    ;;
+  import)
+    name="${2:-}"
+    valid_name "$name" || { echo "bad server name" >&2; exit 2; }
+    mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
+    tmp="$(mktemp)"
+    head -c 20000 > "$tmp"
+    if ! check_config "$tmp"; then rm -f "$tmp"; exit 2; fi
+    install -m 600 "$tmp" "$CONF_DIR/$name.conf"
+    rm -f "$tmp"
+    echo "$name"
+    ;;
+  remove)
+    name="${2:-}"
+    valid_name "$name" || { echo "bad server name" >&2; exit 2; }
+    rm -f "$CONF_DIR/$name.conf"
+    ;;
+  killswitch)
+    case "${2:-}" in
+      on)
+        uid="${3:-}"
+        [[ "$uid" =~ ^[0-9]+$ ]] || { echo "bad uid" >&2; exit 2; }
+        killswitch_rules "$uid"
+        ;;
+      off) nft delete table inet lounge_ks 2>/dev/null || true ;;
+      *) echo "usage: lounge-vpn killswitch on UID | off" >&2; exit 2 ;;
+    esac
+    ;;
+  up)
+    name="${2:-}"; uid="${3:-}"
+    valid_name "$name" || { echo "bad server name" >&2; exit 2; }
+    [[ "$uid" =~ ^[0-9]+$ ]] || { echo "bad uid" >&2; exit 2; }
+    src="$CONF_DIR/$name.conf"
+    [ -f "$src" ] || { echo "no config called $name" >&2; exit 2; }
+    check_config "$src" || exit 2
+    if connected; then
+      wg-quick down "$RUN_DIR/$IFACE.conf" >/dev/null 2>&1 || ip link delete "$IFACE" || true
+    fi
+    install -m 600 "$src" "$RUN_DIR/$IFACE.conf"
+    wg-quick up "$RUN_DIR/$IFACE.conf" >/dev/null
+    if ! split_rules "$uid" "$RUN_DIR/$IFACE.conf"; then
+      echo "VPN is on, but the per-app split could not be set up" >&2
+    fi
+    echo "$name" > "$RUN_DIR/server"
+    json_status
+    ;;
+  down)
+    nft delete table inet lounge 2>/dev/null || true
+    if connected; then
+      wg-quick down "$RUN_DIR/$IFACE.conf" >/dev/null 2>&1 || ip link delete "$IFACE" || true
+    fi
+    rm -f "$RUN_DIR/server"
+    json_status
+    ;;
+  *)
+    echo "usage: lounge-vpn list|status|up NAME UID|down|import NAME|remove NAME|killswitch on UID|off" >&2
+    exit 2
+    ;;
+esac

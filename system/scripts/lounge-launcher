@@ -1,0 +1,77 @@
+#!/bin/sh
+# Starts the home screen in a kiosk browser on the "home" workspace, and keeps it there:
+#  - brings it straight back if it closes or crashes
+#  - if the home screen hasn't checked in within 30 seconds, restarts it in safe mode
+#    (GPU off) so a graphics problem never leaves a blank screen
+#  - in a virtual machine it starts in safe mode straight away
+# It runs as a Chromium app window (--app) as well as kiosk, so there is no tab strip or
+# search bar to show, and it gets the Sway mark "lounge-home" so lounged can keep it full
+# screen and close any stray browser window it opens (see home_guard_plan in lounged.py).
+URL="http://127.0.0.1:8737/"
+PROFILE="$HOME/.local/share/lounge/profiles/_launcher"
+BROWSER="$(command -v chromium || command -v chromium-browser || command -v google-chrome-stable)"
+
+SAFE=""
+case "$(systemd-detect-virt 2>/dev/null)" in
+  oracle|vmware|kvm|qemu|microsoft|parallels) SAFE="--disable-gpu" ;;
+esac
+
+# wait for lounged (up to 15 seconds)
+i=0
+while [ $i -lt 75 ] && ! curl -fs -m 1 "${URL}api/info" >/dev/null 2>&1; do
+  sleep 0.2
+  i=$((i + 1))
+done
+
+ready_since() {
+  curl -fs -m 1 "${URL}api/launcher-ready" 2>/dev/null | sed -n 's/.*"at": *\([0-9.]*\).*/\1/p' | cut -d. -f1
+}
+
+while true; do
+  swaymsg workspace home >/dev/null
+  started=$(date +%s)
+  # shellcheck disable=SC2086
+  "$BROWSER" \
+    --user-data-dir="$PROFILE" \
+    --kiosk \
+    --app="$URL" \
+    --class=lounge-home \
+    --ozone-platform=wayland \
+    $SAFE \
+    --no-first-run --no-default-browser-check \
+    --noerrdialogs --disable-session-crashed-bubble --hide-crash-restore-bubble \
+    --disable-features=Translate,MediaRouter \
+    --disable-pinch --overscroll-history-navigation=0 \
+    >/dev/null 2>&1 &
+  pid=$!
+
+  # Sway puts a window on whichever workspace was showing when its program was first
+  # started (workspace 1 at boot), so move the home screen to "home" once it opens.
+  # Also check the home screen actually drew and checked in.
+  ok=0
+  n=0
+  placed=0
+  while [ $n -lt 30 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    n=$((n + 1))
+    if [ $placed = 0 ] && swaymsg -t get_tree 2>/dev/null | grep -q "\"pid\": $pid,"; then
+      swaymsg "[pid=$pid] mark --add lounge-home, move container to workspace home, fullscreen enable" >/dev/null 2>&1
+      swaymsg workspace home >/dev/null 2>&1
+      placed=1
+    fi
+    at="$(ready_since)"
+    if [ -n "$at" ] && [ "$at" -ge "$started" ]; then ok=1; break; fi
+  done
+  if [ $placed = 0 ] && kill -0 "$pid" 2>/dev/null; then
+    swaymsg "[pid=$pid] mark --add lounge-home, move container to workspace home, fullscreen enable" >/dev/null 2>&1
+  fi
+  if [ $ok = 0 ] && [ -z "$SAFE" ]; then
+    echo "lounge-launcher: home screen didn't check in, restarting in safe mode (GPU off)" >&2
+    kill "$pid" 2>/dev/null
+    sleep 1
+    SAFE="--disable-gpu"
+    continue
+  fi
+  wait "$pid"
+  sleep 1
+done

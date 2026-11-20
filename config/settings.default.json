@@ -1,0 +1,30 @@
+{
+  "keyboardLayout": "qwerty",
+  "displaySize": "standard",
+  "clock24": true,
+  "screensaverMinutes": 5,
+  "screensaverStyle": "logo",
+  "screensaverBounceColours": false,
+  "screenOffMinutes": 15,
+  "youtubeChannels": [],
+  "tvUserAgent": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.5) AppleWebKit/537.36 (KHTML, like Gecko) 85.0.4183.93/6.5 TV Safari/537.36",
+  "chromeFlags": [
+    "--ozone-platform=wayland",
+    "--enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiIgnoreDriverChecks",
+    "--disable-features=UseChromeOSDirectVideoDecoder",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
+    "--autoplay-policy=no-user-gesture-required"
+  ],
+  "screensaverFolder": "~/Pictures/Lounge",
+  "jellyfin": {},
+  "vpnOn": true,
+  "vpnKillSwitch": true,
+  "magnifierZoom": 3,
+  "magnifierSize": "medium",
+  "pointerSize": "large",
+  "appNames": "always",
+  "airPointer": true
+}

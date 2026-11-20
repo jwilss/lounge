@@ -1,0 +1,387 @@
+#!/usr/bin/python3
+"""Lounge idle: switches the TV picture off when nobody has used the box for a while, so a
+paused video or a menu can't burn into an OLED screen. Never while something is playing.
+
+- Answers org.freedesktop.ScreenSaver on the session bus. Chromium (every web app), Opera,
+  Firefox and Jellyfin Desktop ask it to keep the screen on while video plays (Inhibit) and let
+  go when it stops (UnInhibit). An app that closes or crashes is forgotten.
+- Runs swayidle to learn when the remote, keyboard or mouse was last used. Apps that use
+  Wayland's own idle-inhibit (Firefox can) stop swayidle counting as well.
+- Once the box has been idle for screenOffMinutes (settings; 0 = never) with nothing playing,
+  it covers the screen in black (a layer-shell window above everything; an OLED's black
+  pixels are off). Any button, click or movement takes it away, and that first key press
+  only wakes the screen. The admin page wakes it too (lounged calls SimulateUserActivity, as
+  its keys come from a virtual keyboard).
+  It doesn't switch the output off: the TV would lose the signal and re-sync on every wake,
+  and in VirtualBox new windows crashed after the output came back.
+
+Also runs the sleep timer's warning (the timer itself is kept by lounged, set from Control
+Centre): a minute before it runs out, a banner counts down over whatever is on screen; any
+button press cancels it, otherwise the box goes to sleep.
+
+Started by the Sway config (exec_always, so a Sway reload after an update restarts it); a new
+copy takes over the bus name and the old one exits.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+IDLE_TICK = 60          # seconds without input before swayidle reports idle
+CHECK_EVERY = 15        # seconds between checks while idle
+DEFAULT_MINUTES = 15
+
+IFACE_XML = """<node><interface name="org.freedesktop.ScreenSaver">
+  <method name="Inhibit"><arg type="s" name="application_name" direction="in"/>
+    <arg type="s" name="reason_for_inhibit" direction="in"/><arg type="u" name="cookie" direction="out"/></method>
+  <method name="UnInhibit"><arg type="u" name="cookie" direction="in"/></method>
+  <method name="GetActive"><arg type="b" direction="out"/></method>
+  <method name="SimulateUserActivity"/>
+</interface></node>"""
+
+
+def should_blank(now, idle_since, quiet_since, playing, minutes):
+    """True when the picture should go off: idle (no input since idle_since), nothing playing
+    (and nothing played since quiet_since), for at least `minutes`. minutes <= 0 means never."""
+    if idle_since is None or playing or minutes <= 0:
+        return False
+    return now - max(idle_since, quiet_since) >= minutes * 60
+
+
+def log(*a):
+    print(time.strftime("%H:%M:%S"), "lounge-idle:", *a, file=sys.stderr, flush=True)
+
+
+def api(path, body=None):
+    """Calls lounged; None if it doesn't answer."""
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request("http://127.0.0.1:8737" + path, data=data,
+                                 headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.load(r)
+    except (OSError, ValueError):
+        return None
+
+
+def screen_off_minutes():
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8737/api/settings", timeout=2) as r:
+            v = json.load(r).get("screenOffMinutes", DEFAULT_MINUTES)
+        return float(v) if v is not None else DEFAULT_MINUTES
+    except (OSError, ValueError, TypeError):
+        return DEFAULT_MINUTES
+
+
+def make_cover(on_touch):
+    """A black window over everything (layer shell, overlay layer), hidden until needed.
+    It takes the keyboard while shown, so the key that wakes the screen does nothing else."""
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("GtkLayerShell", "0.1")
+        from gi.repository import Gdk, Gtk, GtkLayerShell
+    except (ImportError, ValueError) as e:
+        log("no black cover window (", e, "), will switch the output off instead")
+        return None
+    w = Gtk.Window()
+    GtkLayerShell.init_for_window(w)
+    GtkLayerShell.set_namespace(w, "lounge-blank")
+    GtkLayerShell.set_layer(w, GtkLayerShell.Layer.OVERLAY)
+    for edge in (GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM,
+                 GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT):
+        GtkLayerShell.set_anchor(w, edge, True)
+    GtkLayerShell.set_exclusive_zone(w, -1)
+    GtkLayerShell.set_keyboard_mode(w, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+    w.set_app_paintable(True)
+    w.connect("draw", lambda _w, cr: (cr.set_source_rgb(0, 0, 0), cr.paint(), True)[-1])
+    w.add_events(Gdk.EventMask.KEY_PRESS_MASK | Gdk.EventMask.BUTTON_PRESS_MASK |
+                 Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.SCROLL_MASK)
+    moved = {"at": 0.0}
+
+    def touched(*_):
+        on_touch()
+        return True
+
+    def motion(*_):
+        # the cover appearing under a still pointer sends one motion event; ignore the first second
+        if time.time() - moved["at"] > 1:
+            on_touch()
+        return True
+    for sig in ("key-press-event", "button-press-event", "scroll-event"):
+        w.connect(sig, touched)
+    w.connect("motion-notify-event", motion)
+
+    def shown(*_):
+        moved["at"] = time.time()
+        win = w.get_window()
+        if win:  # no pointer drawn over the black
+            win.set_cursor(Gdk.Cursor.new_from_name(win.get_display(), "none"))
+    w.connect("map", shown)
+    w.realize()
+    return w
+
+
+def make_banner(text_for):
+    """The sleep timer's warning: a dark rounded bar near the bottom of the screen, over any
+    app. Clicks and keys go straight through it. text_for() gives the current text."""
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkLayerShell", "0.1")
+        from gi.repository import Gdk, Gtk, GtkLayerShell
+        import cairo
+    except (ImportError, ValueError) as e:
+        log("no warning banner (", e, ")")
+        return None
+    w = Gtk.Window()
+    GtkLayerShell.init_for_window(w)
+    GtkLayerShell.set_namespace(w, "lounge-sleep-warning")
+    GtkLayerShell.set_layer(w, GtkLayerShell.Layer.OVERLAY)
+    GtkLayerShell.set_anchor(w, GtkLayerShell.Edge.BOTTOM, True)
+    GtkLayerShell.set_keyboard_mode(w, GtkLayerShell.KeyboardMode.NONE)
+    # sized from the screen in GTK's own units (the TV session doubles GTK's scale)
+    try:
+        geo = Gdk.Display.get_default().get_monitor(0).get_geometry()
+        sw, sh = geo.width, geo.height
+    except Exception:
+        sw, sh = 960, 540
+    bw = int(sw * 0.6)
+    bh = max(40, int(bw * 0.085))
+    GtkLayerShell.set_margin(w, GtkLayerShell.Edge.BOTTOM, int(sh * 0.08))
+    w.set_size_request(bw, bh)
+    visual = w.get_screen().get_rgba_visual()
+    if visual:
+        w.set_visual(visual)
+    w.set_app_paintable(True)
+
+    def draw(_w, cr):
+        width, height = w.get_allocated_width(), w.get_allocated_height()
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        r = height / 2
+        cr.new_sub_path()
+        cr.arc(r, r, r, 1.5708, 4.7124)
+        cr.arc(width - r, r, r, 4.7124, 1.5708)
+        cr.close_path()
+        cr.set_source_rgba(0.08, 0.08, 0.1, 0.94)
+        cr.fill()
+        cr.select_font_face("Inter", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        size = height * 0.36
+        text = text_for()
+        cr.set_font_size(size)
+        ext = cr.text_extents(text)
+        if ext.width > width - height:  # shrink to fit inside the rounded ends
+            cr.set_font_size(size * (width - height) / ext.width)
+            ext = cr.text_extents(text)
+        cr.move_to((width - ext.width) / 2 - ext.x_bearing, height / 2 - ext.height / 2 - ext.y_bearing)
+        cr.set_source_rgba(1, 1, 1, 1)
+        cr.show_text(text)
+        return True
+    w.connect("draw", draw)
+    w.realize()
+    w.input_shape_combine_region(cairo.Region())  # clicks go through to whatever is underneath
+    return w
+
+
+def main():
+    from gi.repository import Gio, GLib
+
+    st = {"idle_since": None, "quiet_since": time.time(), "blank": False, "swayidle": None}
+    inhibitors = {}         # cookie -> (sender, application, reason)
+    watches = {}            # sender -> bus watch id
+    next_cookie = [1]
+    loop = GLib.MainLoop()
+
+    cover = make_cover(lambda: wake("button pressed"))
+
+    def outputs(on):
+        if cover:
+            cover.set_visible(not on)
+        else:  # no GTK layer shell: fall back to switching the output off
+            subprocess.run(["swaymsg", f"output * power {'on' if on else 'off'}"],
+                           capture_output=True, timeout=5)
+
+    def wake(why):
+        if st["blank"]:
+            log(why + ": picture on")
+            st["blank"] = False
+            outputs(True)
+        if st["idle_since"] is not None:
+            st["idle_since"] = time.time()   # count the idle time again from now
+
+    def check():
+        if st["blank"]:
+            return
+        if should_blank(time.time(), st["idle_since"], st["quiet_since"], bool(inhibitors),
+                        screen_off_minutes()):
+            log("nothing playing and no one using the box: picture off")
+            st["blank"] = True
+            outputs(False)
+
+    def on_idle():
+        st["idle_since"] = time.time() - IDLE_TICK
+        check()
+
+    def on_active():
+        wake("button pressed")
+        st["idle_since"] = None
+        cancel_sleep("button pressed")
+
+    # ---- sleep timer warning (lounged keeps the timer)
+    sl = {"warning": False, "left": 60, "watcher": None, "seen_idle": False}
+    banner = make_banner(lambda: f"Going to sleep in {sl['left']} seconds · press any button to keep watching")
+
+    def start_warning():
+        sl.update(warning=True, seen_idle=False)
+        log("sleep timer: a minute to go")
+        if banner:
+            banner.show()
+        try:  # a short swayidle notices the next button press, even if someone pressed one recently
+            p = subprocess.Popen(["swayidle", "-w", "timeout", "1", "echo idle", "resume", "echo active"],
+                                 stdout=subprocess.PIPE, text=True, bufsize=1)
+        except OSError:
+            return
+        sl["watcher"] = p
+
+        def readable(_ch, _cond):
+            line = p.stdout.readline()
+            if not line:
+                return False
+            if line.strip() == "idle":
+                sl["seen_idle"] = True
+            elif line.strip() == "active" and sl["seen_idle"]:
+                cancel_sleep("button pressed")
+            return True
+        GLib.io_add_watch(GLib.IOChannel.unix_new(p.stdout.fileno()), GLib.PRIORITY_DEFAULT,
+                          GLib.IOCondition.IN | GLib.IOCondition.HUP, readable)
+
+    def stop_warning():
+        sl["warning"] = False
+        if banner:
+            banner.hide()
+        if sl["watcher"]:
+            sl["watcher"].terminate()
+            sl["watcher"] = None
+
+    def cancel_sleep(why):
+        if sl["warning"]:
+            log(why + ": sleep timer cancelled")
+            stop_warning()
+            api("/api/sleeptimer", {"minutes": 0})
+
+    def sleep_tick():
+        t = api("/api/sleeptimer")
+        if not t or t.get("at") is None:
+            if sl["warning"]:
+                stop_warning()   # turned off in Control Centre
+            return True
+        sl["left"] = int(t.get("remaining") or 0)
+        if sl["left"] <= 60 and not sl["warning"]:
+            start_warning()
+        if sl["warning"]:
+            if banner:
+                banner.queue_draw()
+            if sl["left"] <= 0:
+                stop_warning()
+                log("sleep timer ran out: going to sleep")
+                api("/api/sleeptimer", {"minutes": 0})   # first, so the next tick doesn't ask again
+                api("/api/power", {"action": "sleep"})
+        return True
+
+    # ---- swayidle, restarted if it ever stops
+    def start_swayidle():
+        try:
+            p = subprocess.Popen(["swayidle", "-w", "timeout", str(IDLE_TICK), "echo idle",
+                                  "resume", "echo active"], stdout=subprocess.PIPE, text=True, bufsize=1)
+        except OSError as e:
+            log("swayidle not available:", e)
+            return False
+        st["swayidle"] = p
+        ch = GLib.IOChannel.unix_new(p.stdout.fileno())
+
+        def readable(_ch, cond):
+            line = p.stdout.readline()
+            if not line:  # swayidle ended
+                GLib.timeout_add_seconds(5, lambda: start_swayidle() and False)
+                return False
+            word = line.strip()
+            if word == "idle":
+                on_idle()
+            elif word == "active":
+                on_active()
+            return True
+        GLib.io_add_watch(ch, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, readable)
+        return True
+
+    # ---- org.freedesktop.ScreenSaver
+    def drop(cookie):
+        if cookie in inhibitors:
+            sender, app, _ = inhibitors.pop(cookie)
+            log("released by", app)
+            if not inhibitors:
+                st["quiet_since"] = time.time()   # count idle time from when playing stopped
+            if sender in watches and not any(s == sender for s, _, _ in inhibitors.values()):
+                Gio.bus_unwatch_name(watches.pop(sender))
+
+    def vanished(_conn, sender):
+        for c in [c for c, (s, _, _) in inhibitors.items() if s == sender]:
+            drop(c)
+
+    def call(conn, sender, _path, _iface, method, params, inv):
+        if method == "Inhibit":
+            app, reason = params.unpack()
+            cookie = next_cookie[0]
+            next_cookie[0] += 1
+            inhibitors[cookie] = (sender, app, reason)
+            if sender not in watches:
+                watches[sender] = Gio.bus_watch_name_on_connection(
+                    conn, sender, Gio.BusNameWatcherFlags.NONE, None, vanished)
+            log("keep the screen on:", os.path.basename(app), f"({reason})")
+            inv.return_value(GLib.Variant("(u)", (cookie,)))
+        elif method == "UnInhibit":
+            drop(params.unpack()[0])
+            inv.return_value(None)
+        elif method == "GetActive":
+            inv.return_value(GLib.Variant("(b)", (st["blank"],)))
+        else:  # SimulateUserActivity: lounged calls this for the admin page's keys, which arrive
+            # through a virtual keyboard that swayidle doesn't count as someone using the box
+            wake("admin page used")
+            inv.return_value(None)
+
+    info = Gio.DBusNodeInfo.new_for_xml(IFACE_XML).interfaces[0]
+
+    def acquired(conn, name):
+        for path in ("/ScreenSaver", "/org/freedesktop/ScreenSaver"):
+            conn.register_object(path, info, call, None, None)
+        log("running; screen off after", screen_off_minutes(), "minutes idle")
+
+    def lost(_conn, _name):
+        log("another copy took over")
+        loop.quit()
+
+    Gio.bus_own_name(Gio.BusType.SESSION, "org.freedesktop.ScreenSaver",
+                     Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT | Gio.BusNameOwnerFlags.REPLACE,
+                     None, acquired, lost)
+    start_swayidle()
+    GLib.timeout_add_seconds(CHECK_EVERY, lambda: (st["idle_since"] is not None and check()) or True)
+    GLib.timeout_add_seconds(1, sleep_tick)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 15, loop.quit)  # SIGTERM
+    try:
+        loop.run()
+    finally:
+        if st["swayidle"]:
+            st["swayidle"].terminate()
+        if sl["watcher"]:
+            sl["watcher"].terminate()
+        if st["blank"]:
+            outputs(True)
+
+
+if __name__ == "__main__":
+    main()

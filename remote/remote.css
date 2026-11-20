@@ -1,0 +1,79 @@
+:root {
+  --bg: #0c0c10;
+  --card: #1c1c22;
+  --card-2: #26262e;
+  --text: #f5f5f7;
+  --text-2: rgba(245, 245, 247, .6);
+  --accent: #f5f5f7;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  max-width: 520px; margin: 0 auto;
+  user-select: none; -webkit-user-select: none;
+}
+header { display: flex; align-items: center; justify-content: space-between; margin: 4px 4px 14px; }
+h1 { font-size: 26px; margin: 0; letter-spacing: -.02em; }
+.h1-sub { font-weight: 500; color: var(--text-2); }
+.conn { font-size: 13px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.conn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #ff9f0a; }
+.conn.ok::before { background: #32d74b; }
+.conn.bad::before { background: #ff453a; }
+
+.tabs { display: flex; gap: 6px; padding: 4px; background: var(--card); border-radius: 14px; margin-bottom: 16px; }
+.tab { flex: 1; border: 0; border-radius: 10px; padding: 10px 0; font: inherit; font-size: 15px; font-weight: 600; color: var(--text-2); background: transparent; }
+.tab.active { background: var(--card-2); color: var(--text); }
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+.pad {
+  height: min(58vh, 420px); border-radius: 28px;
+  background: radial-gradient(circle at 50% 40%, #2c2c35, #1a1a20 70%);
+  display: flex; align-items: flex-end; justify-content: center;
+  touch-action: none; margin-bottom: 14px; position: relative; overflow: hidden;
+}
+.pad.flash::after { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,.06); }
+.pad-hint { font-size: 13px; color: var(--text-2); margin-bottom: 16px; pointer-events: none; }
+
+.buttons { display: flex; gap: 10px; margin-bottom: 10px; }
+.btn {
+  flex: 1; border: 0; border-radius: 16px; padding: 18px 0;
+  font: inherit; font-size: 16px; font-weight: 600; color: var(--text); background: var(--card);
+}
+.btn:active { background: var(--card-2); transform: scale(.97); }
+.btn-size { font-size: 20px; font-weight: 700; }
+.btn-zoom { font-weight: 700; background: linear-gradient(135deg, #ffb340, #ff375f); color: #fff; }
+.btn-primary { background: var(--accent); color: #111; }
+.btn-primary:active { background: #d8d8dc; }
+.wide { width: 100%; margin-top: 8px; }
+
+.note { color: var(--text-2); font-size: 14px; line-height: 1.4; margin: 0 4px 12px; }
+textarea, input[type=url], input[type=text] {
+  width: 100%; border: 0; border-radius: 14px; padding: 14px; margin: 6px 0 12px;
+  font: inherit; font-size: 17px; color: var(--text); background: var(--card); outline: none;
+  user-select: text; -webkit-user-select: text;
+}
+textarea:focus, input:focus { box-shadow: 0 0 0 2px rgba(255,255,255,.35); }
+label { display: block; font-size: 14px; color: var(--text-2); margin: 0 4px; }
+label.check { display: flex; align-items: center; gap: 10px; font-size: 16px; color: var(--text); margin: 4px 4px 14px; }
+label.check input { width: 22px; height: 22px; accent-color: #32d74b; }
+
+.toast {
+  position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translate(-50%, 150%);
+  background: #2c2c34; padding: 12px 18px; border-radius: 14px; font-size: 15px; font-weight: 600;
+  opacity: 0; transition: transform .3s cubic-bezier(.2,.8,.2,1), opacity .2s; white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
+}
+.toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+.file-btn { display: block; text-align: center; cursor: pointer; }
+.vpn-status { margin: 16px 4px 8px; font-size: 15px; color: var(--text-2); }
+.vpn-list { list-style: none; padding: 0; margin: 0; }
+.vpn-list li { display: flex; align-items: center; justify-content: space-between; background: var(--card); border-radius: 14px; padding: 14px 16px; margin-bottom: 8px; font-size: 16px; }
+.vpn-list li small { color: #32d74b; font-weight: 600; }
+.vpn-list button { border: 0; background: transparent; color: #ff6961; font: inherit; font-size: 14px; }
+.note b { color: var(--text); }
+.vpn-list .renew { font-size: 13px; color: var(--text-2); margin-top: 3px; }
+.vpn-list .renew.soon { color: #ffb340; font-weight: 600; }

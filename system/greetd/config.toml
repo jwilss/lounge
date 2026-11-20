@@ -1,0 +1,12 @@
+# Boots straight into Lounge as the "lounge" user.
+[terminal]
+vt = 1
+
+[initial_session]
+command = "/usr/local/bin/lounge-session"
+user = "lounge"
+
+# shown only if you exit the session (Ctrl+Alt+Backspace)
+[default_session]
+command = "agreety --cmd /usr/local/bin/lounge-session"
+user = "_greetd"

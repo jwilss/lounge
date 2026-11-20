@@ -1,0 +1,40 @@
+{
+  "apps": [
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "type": "web",
+      "url": "https://www.youtube.com/tv",
+      "tvLayout": true,
+      "vpn": true,
+      "color": "#d92b2b",
+      "shelf": "youtube"
+    },
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "type": "native",
+      "command": [
+        "flatpak",
+        "run",
+        "org.jellyfin.JellyfinDesktop",
+        "--fullscreen"
+      ],
+      "match": {
+        "app_id": "org.jellyfin.JellyfinDesktop"
+      },
+      "vpn": true,
+      "color": "#6a3fb5"
+    },
+    {
+      "id": "firefox",
+      "name": "Firefox",
+      "type": "web",
+      "browser": "firefox",
+      "url": "https://www.google.co.uk",
+      "vpn": true,
+      "color": "#e25920",
+      "seedIn": true
+    }
+  ]
+}

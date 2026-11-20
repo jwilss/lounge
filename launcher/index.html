@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <title>Lounge Home</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="css/launcher.css">
+</head>
+<body>
+  <div id="bg" aria-hidden="true">
+    <div class="bg-layer" id="bg-a"></div>
+    <div class="bg-layer" id="bg-b"></div>
+    <div class="bg-shade"></div>
+  </div>
+
+  <header id="status">
+    <img id="brand" src="../brand/logo.svg" alt="Lounge" draggable="false">
+    <div id="preview-badge" hidden>Preview mode</div>
+    <div class="status-right">
+      <div id="vpn-pill" hidden></div>
+      <div id="clock"></div>
+      <button id="avatar" type="button" aria-label="Profiles"></button>
+    </div>
+  </header>
+
+  <main id="home">
+    <div id="scroller">
+      <section id="shelf" data-group="shelf" data-remember>
+        <div class="shelf-hero">
+          <h1 id="shelf-title"></h1>
+          <p id="shelf-sub"></p>
+        </div>
+        <div id="shelf-label"></div>
+        <div id="shelf-row"></div>
+      </section>
+      <section id="grid" data-group="grid" data-remember></section>
+    </div>
+  </main>
+
+  <div id="layers"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="kb-host"></div>
+  <div id="switcher" hidden aria-label="Open apps">
+    <div class="sw-track"></div>
+    <div class="sw-empty" hidden>No apps open</div>
+    <div class="sw-hint"><b>OK</b> open <span class="sw-dot"></span> <b>Up</b> close <span class="sw-dot"></span> <b>Back</b> return</div>
+  </div>
+  <div id="pointer" aria-hidden="true"><div class="pointer-ring"></div></div>
+  <div id="boot" aria-hidden="true"><img class="boot-logo" src="../brand/logo.svg" alt=""><img class="boot-mark" src="../brand/maker.svg" alt=""></div>
+  <div id="screensaver" hidden><div class="ss-image"></div><div class="ss-image"></div><div class="ss-float"><div class="ss-logo"></div><div class="ss-clock"></div></div></div>
+
+  <script src="vendor/qrcode.js"></script>
+  <script src="../shared/keyboard-core.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/focus.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/sheets.js"></script>
+  <script src="js/controlcentre.js"></script>
+  <script src="js/pointer.js"></script>
+  <script src="js/switcher.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

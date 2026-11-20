@@ -1,0 +1,4 @@
+#!/bin/sh
+# Size button: cycles Display size (Standard, Large, Extra large).
+curl -fsS -m 3 -X POST -H 'Content-Type: application/json' -d '{"cycle":true}' \
+  http://127.0.0.1:8737/api/size -o /dev/null 2>/dev/null

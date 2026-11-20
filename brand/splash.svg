@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3840 2160" width="3840" height="2160">
+  <!-- Boot splash: the logo at 30% of the screen width on black, matching the home screen's start-up.
+       Built into splash.png by the installer; you only need to replace logo.svg. -->
+  <rect width="3840" height="2160" fill="#000"/>
+  <image x="1344" y="779" width="1152" height="602" preserveAspectRatio="xMidYMid meet" href="logo.svg" xlink:href="logo.svg"/>
+  <!-- maker's mark with the version in front of it, bottom right (maker.svg is drawn by the installer) -->
+  <image x="3104" y="1976" width="640" height="88" href="maker.svg" xlink:href="maker.svg"/>
+</svg>

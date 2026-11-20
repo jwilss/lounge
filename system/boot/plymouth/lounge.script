@@ -1,0 +1,34 @@
+# Lounge boot splash: the logo at 30% of the screen width, centred on black, fading in.
+# It matches the Sway background and the home screen's start-up, so boot looks like one picture.
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+logo = Image("logo.png");
+w = Window.GetWidth() * 0.30;
+logo = logo.Scale(w, w * logo.GetHeight() / logo.GetWidth());
+sprite = Sprite(logo);
+sprite.SetX(Window.GetWidth() / 2 - logo.GetWidth() / 2);
+sprite.SetY(Window.GetHeight() / 2 - logo.GetHeight() / 2);
+sprite.SetOpacity(0);
+
+# maker's mark with the version, bottom right, sized like the 4K splash (640 x 88, 96 in)
+k = Window.GetWidth() / 3840;
+maker = Image("maker.png");
+if (maker) {
+  maker = maker.Scale(maker.GetWidth() * k, maker.GetHeight() * k);
+  mark = Sprite(maker);
+  mark.SetX(Window.GetWidth() - 96 * k - maker.GetWidth());
+  mark.SetY(Window.GetHeight() - 96 * k - maker.GetHeight());
+  mark.SetOpacity(0);
+}
+
+fade = 0;
+fun refresh() {
+  if (fade < 1) {
+    fade = fade + 0.04;
+    if (fade > 1) fade = 1;
+    sprite.SetOpacity(fade);
+    if (mark) mark.SetOpacity(fade);
+  }
+}
+Plymouth.SetRefreshFunction(refresh);

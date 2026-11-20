@@ -1,0 +1,5 @@
+# Lounge: let the person logged in at the TV (the lounge account, through logind's "uaccess")
+# create a virtual keyboard. lounged uses it for the admin page's keys, so Sway sees an
+# ordinary keyboard with the box's own layout (wtype's one-off keymaps crashed new Chromium
+# windows).
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"

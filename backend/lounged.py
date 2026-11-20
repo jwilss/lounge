@@ -33,7 +33,7 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 PORT = int(os.environ.get("LOUNGE_PORT", "8737"))
 ROOT = Path(os.environ.get("LOUNGE_ROOT", Path(__file__).resolve().parent.parent))
 DATA = Path(os.environ.get("LOUNGE_DATA", Path.home() / ".local/share/lounge"))

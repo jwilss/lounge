@@ -50,7 +50,7 @@
 
   const API = {
     preview: true,
-    info: { mode: 'preview', version: '0.6.0', remoteUrl: null },
+    info: { mode: 'preview', version: '0.6.1', remoteUrl: null },
 
     async init() {
       if (location.protocol.startsWith('http')) {

@@ -67,6 +67,10 @@ table inet lounge_ks {
   chain out {
     type filter hook output priority filter; policy accept;
     $sk oifname { "lo", "$IFACE" } accept
+    # the tunnel's own packets: WireGuard sends an app's traffic out encrypted with its fwmark,
+    # and the kernel still counts that packet as the app's, so without this the kill switch
+    # blocked every VPN app while the VPN was up (apps can't set this mark themselves)
+    $sk meta mark $MARK accept
     $sk ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
     $sk ip6 daddr { fc00::/7, fe80::/10 } accept
     $sk reject
